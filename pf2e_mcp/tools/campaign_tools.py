@@ -1,6 +1,8 @@
 # pf2e_mcp/tools/campaign_tools.py
 from __future__ import annotations
 import os
+import sqlite3
+import json
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -14,14 +16,11 @@ from pf2e_mcp.registry.base import BaseToolRegistry
 # You'll need to adjust these imports based on your actual file structure
 try:
     from game_data.campaign_helpers import (
-        PlayerCharacter, Campaign, CampaignSession,
-        CharacterDataManager, CampaignDataManager,
-        Alignment, Size, Ability, Skill, ProficiencyRank,
-        AbilityScores, Equipment, SimpleEquipment, Weapon, Armor
+        Campaign, CampaignSession, CampaignDataManager
     )
 except ImportError:
     # Fallback for development - you might want to handle this differently
-    logging.warning("Could not import campaign_helpers - campaign tools may not work properly")
+    logging.warning("Could not import campaign_helpers - some campaign tools may not work properly")
 
 log = logging.getLogger(__name__)
 
@@ -81,19 +80,15 @@ class CampaignToolset(BaseToolRegistry):
     
     def __init__(self, 
                  save_dir: str = DEFAULT_SAVE_DIR,
-                 campaign_db: str = DEFAULT_CAMPAIGN_DB,
-                 character_dir: str = DEFAULT_CHARACTER_DIR):
+                 campaign_db: str = DEFAULT_CAMPAIGN_DB):
         self.save_dir = Path(save_dir)
         self.campaign_db = campaign_db
-        self.character_dir = character_dir
         
         # Ensure directories exist
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        Path(character_dir).mkdir(parents=True, exist_ok=True)
         
-        # Initialize managers
+        # Initialize campaign manager
         self.campaign_manager = CampaignDataManager(self.campaign_db)
-        self.character_manager = CharacterDataManager(self.character_dir)
         
         log.info("CampaignToolset initialized with save_dir=%s", self.save_dir)
 
@@ -273,22 +268,25 @@ class CampaignToolset(BaseToolRegistry):
             log.info("Saving character: %s (player: %s)", name, player_name)
             
             try:
-                # Create character with basic info
-                character = PlayerCharacter(
-                    name=name,
-                    player_name=player_name,
-                    character_class=character_class,
-                    level=int(level),
-                    ancestry=ancestry,
-                    background=background,
-                    alignment=Alignment.TRUE_NEUTRAL,  # Default, could parse alignment string
-                    max_hit_points=int(max_hit_points)
-                )
-                
-                # Set current HP to max HP initially
-                character.hit_points = character.max_hit_points
-                
-                self.character_manager.save_character(character)
+                with sqlite3.connect(self.campaign_db) as conn:
+                    cursor = conn.cursor()
+                    
+                    now = datetime.now().isoformat()
+                    
+                    # Insert or replace character
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO characters (
+                            name, player_name, character_class, level, ancestry, 
+                            background, alignment, max_hit_points, current_hit_points,
+                            created_date, last_updated
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        name, player_name, character_class, int(level), ancestry,
+                        background, alignment, int(max_hit_points), int(max_hit_points),
+                        now, now
+                    ))
+                    
+                    conn.commit()
                 
                 return OperationResult(
                     success=True,
@@ -308,20 +306,30 @@ class CampaignToolset(BaseToolRegistry):
             Load a character by name and return summary information.
             """
             try:
-                character = self.character_manager.load_character(name)
-                if character:
-                    return CharacterSummary(
-                        name=character.name,
-                        player_name=character.player_name,
-                        character_class=character.character_class,
-                        level=character.level,
-                        ancestry=character.ancestry,
-                        alignment=character.alignment.value if hasattr(character.alignment, 'value') else str(character.alignment),
-                        hit_points=character.hit_points,
-                        max_hit_points=character.max_hit_points,
-                        last_updated=character.last_updated.isoformat()
-                    )
-                return None
+                with sqlite3.connect(self.campaign_db) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("""
+                        SELECT name, player_name, character_class, level, ancestry,
+                               alignment, current_hit_points, max_hit_points, last_updated
+                        FROM characters WHERE name = ?
+                    """, (name,))
+                    
+                    row = cursor.fetchone()
+                    if row:
+                        return CharacterSummary(
+                            name=row['name'],
+                            player_name=row['player_name'],
+                            character_class=row['character_class'],
+                            level=row['level'],
+                            ancestry=row['ancestry'],
+                            alignment=row['alignment'],
+                            hit_points=row['current_hit_points'],
+                            max_hit_points=row['max_hit_points'],
+                            last_updated=row['last_updated']
+                        )
+                    return None
                 
             except Exception as e:
                 log.error("Failed to load character: %s", e)
@@ -333,7 +341,10 @@ class CampaignToolset(BaseToolRegistry):
             List all available character names.
             """
             try:
-                return self.character_manager.list_characters()
+                with sqlite3.connect(self.campaign_db) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT name FROM characters ORDER BY name")
+                    return [row[0] for row in cursor.fetchall()]
             except Exception as e:
                 log.error("Failed to list characters: %s", e)
                 return []
@@ -348,25 +359,37 @@ class CampaignToolset(BaseToolRegistry):
             Update a character's hit points.
             """
             try:
-                character = self.character_manager.load_character(name)
-                if not character:
-                    return OperationResult(
-                        success=False,
-                        message=f"Character '{name}' not found"
-                    )
-                
-                character.hit_points = int(current_hp)
-                if max_hp is not None:
-                    character.max_hit_points = int(max_hp)
-                
-                # Ensure current HP doesn't exceed max HP
-                character.hit_points = min(character.hit_points, character.max_hit_points)
-                
-                self.character_manager.save_character(character)
+                with sqlite3.connect(self.campaign_db) as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get current character data
+                    cursor.execute("""
+                        SELECT current_hit_points, max_hit_points 
+                        FROM characters WHERE name = ?
+                    """, (name,))
+                    
+                    row = cursor.fetchone()
+                    if not row:
+                        return OperationResult(
+                            success=False,
+                            message=f"Character '{name}' not found"
+                        )
+                    
+                    new_max_hp = int(max_hp) if max_hp is not None else row[1]
+                    new_current_hp = min(int(current_hp), new_max_hp)
+                    
+                    # Update HP
+                    cursor.execute("""
+                        UPDATE characters 
+                        SET current_hit_points = ?, max_hit_points = ?, last_updated = ?
+                        WHERE name = ?
+                    """, (new_current_hp, new_max_hp, datetime.now().isoformat(), name))
+                    
+                    conn.commit()
                 
                 return OperationResult(
                     success=True,
-                    message=f"Updated {name}'s HP: {character.hit_points}/{character.max_hit_points}"
+                    message=f"Updated {name}'s HP: {new_current_hp}/{new_max_hp}"
                 )
                 
             except Exception as e:
@@ -424,22 +447,38 @@ class CampaignToolset(BaseToolRegistry):
             Heal a character by the specified amount.
             """
             try:
-                character = self.character_manager.load_character(name)
-                if not character:
-                    return OperationResult(
-                        success=False,
-                        message=f"Character '{name}' not found"
-                    )
-                
-                old_hp = character.hit_points
-                character.heal(int(amount))
-                self.character_manager.save_character(character)
-                
-                healed = character.hit_points - old_hp
+                with sqlite3.connect(self.campaign_db) as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get current HP
+                    cursor.execute("""
+                        SELECT current_hit_points, max_hit_points 
+                        FROM characters WHERE name = ?
+                    """, (name,))
+                    
+                    row = cursor.fetchone()
+                    if not row:
+                        return OperationResult(
+                            success=False,
+                            message=f"Character '{name}' not found"
+                        )
+                    
+                    old_hp, max_hp = row
+                    new_hp = min(old_hp + int(amount), max_hp)
+                    healed = new_hp - old_hp
+                    
+                    # Update HP
+                    cursor.execute("""
+                        UPDATE characters 
+                        SET current_hit_points = ?, last_updated = ?
+                        WHERE name = ?
+                    """, (new_hp, datetime.now().isoformat(), name))
+                    
+                    conn.commit()
                 
                 return OperationResult(
                     success=True,
-                    message=f"{name} healed {healed} HP ({old_hp} → {character.hit_points}/{character.max_hit_points})"
+                    message=f"{name} healed {healed} HP ({old_hp} → {new_hp}/{max_hp})"
                 )
                 
             except Exception as e:
@@ -455,23 +494,39 @@ class CampaignToolset(BaseToolRegistry):
             Apply damage to a character.
             """
             try:
-                character = self.character_manager.load_character(name)
-                if not character:
-                    return OperationResult(
-                        success=False,
-                        message=f"Character '{name}' not found"
-                    )
-                
-                old_hp = character.hit_points
-                character.take_damage(int(amount))
-                self.character_manager.save_character(character)
-                
-                damage_taken = old_hp - character.hit_points
-                status = " (unconscious)" if not character.is_conscious else ""
+                with sqlite3.connect(self.campaign_db) as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get current HP
+                    cursor.execute("""
+                        SELECT current_hit_points, max_hit_points 
+                        FROM characters WHERE name = ?
+                    """, (name,))
+                    
+                    row = cursor.fetchone()
+                    if not row:
+                        return OperationResult(
+                            success=False,
+                            message=f"Character '{name}' not found"
+                        )
+                    
+                    old_hp, max_hp = row
+                    new_hp = max(old_hp - int(amount), 0)
+                    damage_taken = old_hp - new_hp
+                    status = " (unconscious)" if new_hp <= 0 else ""
+                    
+                    # Update HP
+                    cursor.execute("""
+                        UPDATE characters 
+                        SET current_hit_points = ?, last_updated = ?
+                        WHERE name = ?
+                    """, (new_hp, datetime.now().isoformat(), name))
+                    
+                    conn.commit()
                 
                 return OperationResult(
                     success=True,
-                    message=f"{name} took {damage_taken} damage ({old_hp} → {character.hit_points}/{character.max_hit_points}){status}"
+                    message=f"{name} took {damage_taken} damage ({old_hp} → {new_hp}/{max_hp}){status}"
                 )
                 
             except Exception as e:
@@ -480,10 +535,3 @@ class CampaignToolset(BaseToolRegistry):
                     success=False,
                     message=f"Failed to apply damage: {str(e)}"
                 )
-
-    def _get_connection(self):
-        """Helper method to get database connection (for the bot NPC functionality)."""
-        import sqlite3
-        conn = sqlite3.connect(self.campaign_db)
-        conn.row_factory = sqlite3.Row
-        return conn
