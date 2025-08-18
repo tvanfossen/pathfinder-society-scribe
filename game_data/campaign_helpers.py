@@ -1,6 +1,6 @@
 # game_data/campaign_helpers.py
 """
-Campaign management helpers for tracking game state, player characters, and session data.
+Enhanced campaign management helpers with modern Python patterns.
 Provides structured data models and managers for Pathfinder 2e campaigns.
 """
 
@@ -12,11 +12,34 @@ from typing import Dict, List, Optional, Any, Union, Protocol
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from enum import Enum
+from abc import ABC, abstractmethod
 import logging
 
 log = logging.getLogger(__name__)
 
 
+# Custom Exceptions
+class CampaignDataError(Exception):
+    """Base exception for campaign data operations."""
+    pass
+
+
+class CampaignNotFoundError(CampaignDataError):
+    """Raised when a campaign cannot be found."""
+    pass
+
+
+class CharacterNotFoundError(CampaignDataError):
+    """Raised when a character cannot be found."""
+    pass
+
+
+class ValidationError(CampaignDataError):
+    """Raised when data validation fails."""
+    pass
+
+
+# Enums
 class Alignment(Enum):
     """Character alignment options."""
     LAWFUL_GOOD = "LG"
@@ -40,15 +63,33 @@ class Size(Enum):
     GARGANTUAN = 6
 
 
+class AttendanceStatus(Enum):
+    """Session attendance status options."""
+    PRESENT = "present"
+    ABSENT = "absent"
+    LATE = "late"
+    LEFT_EARLY = "left_early"
+
+
+# Data Models
 @dataclass
 class AbilityScores:
-    """Character ability scores."""
-    strength: int = 10
-    dexterity: int = 10
-    constitution: int = 10
-    intelligence: int = 10
-    wisdom: int = 10
-    charisma: int = 10
+    """Character ability scores with validation."""
+    strength: int = field(default=10, metadata={"min": 1, "max": 30})
+    dexterity: int = field(default=10, metadata={"min": 1, "max": 30})
+    constitution: int = field(default=10, metadata={"min": 1, "max": 30})
+    intelligence: int = field(default=10, metadata={"min": 1, "max": 30})
+    wisdom: int = field(default=10, metadata={"min": 1, "max": 30})
+    charisma: int = field(default=10, metadata={"min": 1, "max": 30})
+    
+    def __post_init__(self):
+        """Validate ability scores on creation."""
+        for field_name, value in self.__dict__.items():
+            field_info = self.__dataclass_fields__[field_name]
+            min_val = field_info.metadata.get("min", 1)
+            max_val = field_info.metadata.get("max", 30)
+            if not (min_val <= value <= max_val):
+                raise ValidationError(f"{field_name} must be between {min_val} and {max_val}, got {value}")
     
     @property
     def str_modifier(self) -> int:
@@ -98,6 +139,16 @@ class SpellcastingEntry:
     known_spells: Dict[int, List[str]] = field(default_factory=dict)
     prepared_spells: Dict[int, List[str]] = field(default_factory=dict)
     
+    def __post_init__(self):
+        """Validate spellcasting data."""
+        valid_traditions = {'arcane', 'divine', 'occult', 'primal'}
+        if self.tradition.lower() not in valid_traditions:
+            raise ValidationError(f"Invalid tradition: {self.tradition}. Must be one of {valid_traditions}")
+        
+        valid_abilities = {'str', 'dex', 'con', 'int', 'wis', 'cha'}
+        if self.ability.lower() not in valid_abilities:
+            raise ValidationError(f"Invalid ability: {self.ability}. Must be one of {valid_abilities}")
+    
     @property
     def is_spontaneous(self) -> bool:
         """Check if this is spontaneous spellcasting."""
@@ -113,17 +164,33 @@ class SpellcastingEntry:
 class Equipment:
     """Equipment item with basic properties."""
     name: str
-    quantity: int = 1
-    bulk: float = 0.0
-    value_cp: int = 0  # Value in copper pieces
+    quantity: int = field(default=1, metadata={"min": 0})
+    bulk: float = field(default=0.0, metadata={"min": 0.0})
+    value_cp: int = field(default=0, metadata={"min": 0})  # Value in copper pieces
     worn: bool = False
     invested: bool = False
     description: str = ""
+    
+    def __post_init__(self):
+        """Validate equipment data."""
+        if not self.name.strip():
+            raise ValidationError("Equipment name cannot be empty")
+        
+        for field_name, value in [("quantity", self.quantity), ("bulk", self.bulk), ("value_cp", self.value_cp)]:
+            field_info = self.__dataclass_fields__[field_name]
+            min_val = field_info.metadata.get("min", 0)
+            if value < min_val:
+                raise ValidationError(f"{field_name} cannot be negative, got {value}")
     
     @property
     def value_gp(self) -> float:
         """Value in gold pieces."""
         return self.value_cp / 100.0
+    
+    @property
+    def total_bulk(self) -> float:
+        """Total bulk for this item stack."""
+        return self.bulk * self.quantity
 
 
 @dataclass
@@ -136,6 +203,16 @@ class Weapon(Equipment):
     range_increment: Optional[int] = None
     reload: Optional[int] = None
     
+    def __post_init__(self):
+        """Validate weapon data."""
+        super().__post_init__()
+        
+        if self.range_increment is not None and self.range_increment <= 0:
+            raise ValidationError("Range increment must be positive")
+        
+        if self.reload is not None and self.reload < 0:
+            raise ValidationError("Reload value cannot be negative")
+    
     @property
     def is_ranged(self) -> bool:
         """Check if weapon is ranged."""
@@ -145,23 +222,36 @@ class Weapon(Equipment):
 @dataclass
 class Armor(Equipment):
     """Armor with defensive statistics."""
-    ac_bonus: int = 0
+    ac_bonus: int = field(default=0, metadata={"min": 0})
     dex_cap: Optional[int] = None
-    check_penalty: int = 0
-    speed_penalty: int = 0
-    strength_requirement: int = 0
+    check_penalty: int = field(default=0, metadata={"max": 0})
+    speed_penalty: int = field(default=0, metadata={"max": 0})
+    strength_requirement: int = field(default=0, metadata={"min": 0})
     armor_group: str = ""
     armor_traits: List[str] = field(default_factory=list)
+    
+    def __post_init__(self):
+        """Validate armor data."""
+        super().__post_init__()
+        
+        if self.ac_bonus < 0:
+            raise ValidationError("AC bonus cannot be negative")
+        
+        if self.check_penalty > 0:
+            raise ValidationError("Check penalty must be zero or negative")
+        
+        if self.speed_penalty > 0:
+            raise ValidationError("Speed penalty must be zero or negative")
 
 
 @dataclass
 class PlayerCharacter:
-    """Complete player character data."""
+    """Complete player character data with validation."""
     # Basic Information
     name: str
     player_name: str = ""
     character_class: str = ""
-    level: int = 1
+    level: int = field(default=1, metadata={"min": 1, "max": 20})
     ancestry: str = ""
     heritage: str = ""
     background: str = ""
@@ -170,15 +260,15 @@ class PlayerCharacter:
     
     # Core Stats
     abilities: AbilityScores = field(default_factory=AbilityScores)
-    hit_points: int = 0
-    max_hit_points: int = 0
-    hero_points: int = 1
+    hit_points: int = field(default=0, metadata={"min": 0})
+    max_hit_points: int = field(default=0, metadata={"min": 1})
+    hero_points: int = field(default=1, metadata={"min": 0, "max": 3})
     
     # Experience and Advancement
-    experience_points: int = 0
+    experience_points: int = field(default=0, metadata={"min": 0})
     
     # Combat Stats
-    armor_class: int = 10
+    armor_class: int = field(default=10, metadata={"min": 10})
     perception: int = 0
     
     # Saves
@@ -210,12 +300,34 @@ class PlayerCharacter:
     created_date: datetime = field(default_factory=datetime.now)
     last_updated: datetime = field(default_factory=datetime.now)
     
+    def __post_init__(self):
+        """Validate character data."""
+        if not self.name.strip():
+            raise ValidationError("Character name cannot be empty")
+        
+        # Validate level constraints
+        field_info = self.__dataclass_fields__["level"]
+        min_level = field_info.metadata.get("min", 1)
+        max_level = field_info.metadata.get("max", 20)
+        if not (min_level <= self.level <= max_level):
+            raise ValidationError(f"Level must be between {min_level} and {max_level}")
+        
+        # Validate hit points
+        if self.hit_points > self.max_hit_points:
+            raise ValidationError("Current hit points cannot exceed maximum hit points")
+        
+        # Validate hero points
+        field_info = self.__dataclass_fields__["hero_points"]
+        max_hero = field_info.metadata.get("max", 3)
+        if self.hero_points > max_hero:
+            raise ValidationError(f"Hero points cannot exceed {max_hero}")
+    
     def update_timestamp(self) -> None:
         """Update the last modified timestamp."""
         self.last_updated = datetime.now()
     
     @property
-    def ability_modifier(self) -> Dict[str, int]:
+    def ability_modifiers(self) -> Dict[str, int]:
         """Get all ability modifiers as a dictionary."""
         return {
             'str': self.abilities.str_modifier,
@@ -226,6 +338,24 @@ class PlayerCharacter:
             'cha': self.abilities.cha_modifier
         }
     
+    @property
+    def total_bulk_carried(self) -> float:
+        """Calculate total bulk of carried equipment."""
+        total = sum(item.total_bulk for item in self.equipment)
+        total += sum(weapon.total_bulk for weapon in self.weapons)
+        total += sum(armor_piece.total_bulk for armor_piece in self.armor)
+        return total
+    
+    @property
+    def bulk_limit(self) -> int:
+        """Calculate bulk carrying capacity."""
+        return 5 + self.abilities.str_modifier
+    
+    @property
+    def is_encumbered(self) -> bool:
+        """Check if character is encumbered by bulk."""
+        return self.total_bulk_carried > self.bulk_limit
+    
     def get_skill_bonus(self, skill_name: str) -> int:
         """Calculate total skill bonus."""
         base_proficiency = self.skills.get(skill_name, 0)
@@ -233,288 +363,15 @@ class PlayerCharacter:
         return base_proficiency
     
     def add_equipment(self, item: Equipment) -> None:
-        """Add equipment item."""
+        """Add equipment item with validation."""
+        if not isinstance(item, Equipment):
+            raise ValidationError("Item must be an Equipment instance")
         self.equipment.append(item)
         self.update_timestamp()
     
     def add_weapon(self, weapon: Weapon) -> None:
-        """Add weapon."""
+        """Add weapon with validation."""
+        if not isinstance(weapon, Weapon):
+            raise ValidationError("Item must be a Weapon instance")
         self.weapons.append(weapon)
         self.update_timestamp()
-    
-    def add_armor(self, armor: Armor) -> None:
-        """Add armor piece."""
-        self.armor.append(armor)
-        self.update_timestamp()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
-        data = asdict(self)
-        # Convert enums to their values
-        data['alignment'] = self.alignment.value
-        data['size'] = self.size.value
-        # Convert datetime objects
-        data['created_date'] = self.created_date.isoformat()
-        data['last_updated'] = self.last_updated.isoformat()
-        return data
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'PlayerCharacter':
-        """Create from dictionary."""
-        # Handle enum fields
-        if 'alignment' in data:
-            data['alignment'] = Alignment(data['alignment'])
-        if 'size' in data:
-            data['size'] = Size(data['size'])
-        
-        # Handle datetime fields
-        if 'created_date' in data and isinstance(data['created_date'], str):
-            data['created_date'] = datetime.fromisoformat(data['created_date'])
-        if 'last_updated' in data and isinstance(data['last_updated'], str):
-            data['last_updated'] = datetime.fromisoformat(data['last_updated'])
-        
-        # Handle nested dataclasses
-        if 'abilities' in data and isinstance(data['abilities'], dict):
-            data['abilities'] = AbilityScores(**data['abilities'])
-        
-        # Handle equipment lists
-        if 'equipment' in data:
-            data['equipment'] = [Equipment(**item) if isinstance(item, dict) else item 
-                               for item in data['equipment']]
-        
-        if 'weapons' in data:
-            data['weapons'] = [Weapon(**item) if isinstance(item, dict) else item 
-                             for item in data['weapons']]
-        
-        if 'armor' in data:
-            data['armor'] = [Armor(**item) if isinstance(item, dict) else item 
-                           for item in data['armor']]
-        
-        if 'spellcasting' in data:
-            data['spellcasting'] = [SpellcastingEntry(**item) if isinstance(item, dict) else item 
-                                  for item in data['spellcasting']]
-        
-        return cls(**data)
-
-
-@dataclass
-class CampaignSession:
-    """Individual game session data."""
-    session_number: int
-    session_date: date
-    duration_minutes: int = 0
-    experience_awarded: int = 0
-    treasure_found: List[str] = field(default_factory=list)
-    story_notes: str = ""
-    dm_notes: str = ""
-    attendance: List[str] = field(default_factory=list)  # Player names present
-    
-    @property
-    def duration_hours(self) -> float:
-        """Session duration in hours."""
-        return self.duration_minutes / 60.0
-
-
-@dataclass 
-class Campaign:
-    """Campaign-level data and metadata."""
-    name: str
-    description: str = ""
-    dm_name: str = ""
-    created_date: date = field(default_factory=date.today)
-    
-    # Campaign settings
-    starting_level: int = 1
-    allowed_ancestries: List[str] = field(default_factory=list)
-    house_rules: List[str] = field(default_factory=list)
-    
-    # Progress tracking
-    current_session: int = 0
-    total_sessions: int = 0
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
-        data = asdict(self)
-        data['created_date'] = self.created_date.isoformat()
-        return data
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Campaign':
-        """Create from dictionary."""
-        if 'created_date' in data and isinstance(data['created_date'], str):
-            data['created_date'] = date.fromisoformat(data['created_date'])
-        return cls(**data)
-
-
-class CharacterDataManager:
-    """Manages character data persistence and operations."""
-    
-    def __init__(self, data_directory: Union[str, Path] = "game_data/player_characters"):
-        self.data_dir = Path(data_directory)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-    
-    def save_character(self, character: PlayerCharacter) -> None:
-        """Save character to JSON file."""
-        filename = f"{character.name.lower().replace(' ', '_')}.json"
-        filepath = self.data_dir / filename
-        
-        character.update_timestamp()
-        
-        try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(character.to_dict(), f, indent=2, ensure_ascii=False)
-            log.info("Saved character %s to %s", character.name, filepath)
-        except Exception as e:
-            log.error("Failed to save character %s: %s", character.name, e)
-            raise
-    
-    def load_character(self, character_name: str) -> Optional[PlayerCharacter]:
-        """Load character from JSON file."""
-        filename = f"{character_name.lower().replace(' ', '_')}.json"
-        filepath = self.data_dir / filename
-        
-        if not filepath.exists():
-            log.warning("Character file not found: %s", filepath)
-            return None
-        
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            character = PlayerCharacter.from_dict(data)
-            log.info("Loaded character %s from %s", character.name, filepath)
-            return character
-        except Exception as e:
-            log.error("Failed to load character %s: %s", character_name, e)
-            return None
-    
-    def list_characters(self) -> List[str]:
-        """List all available character names."""
-        characters = []
-        for file_path in self.data_dir.glob("*.json"):
-            # Convert filename back to character name
-            char_name = file_path.stem.replace('_', ' ').title()
-            characters.append(char_name)
-        return sorted(characters)
-    
-    def delete_character(self, character_name: str) -> bool:
-        """Delete character file."""
-        filename = f"{character_name.lower().replace(' ', '_')}.json"
-        filepath = self.data_dir / filename
-        
-        if filepath.exists():
-            try:
-                filepath.unlink()
-                log.info("Deleted character %s", character_name)
-                return True
-            except Exception as e:
-                log.error("Failed to delete character %s: %s", character_name, e)
-                return False
-        return False
-
-
-class CampaignDataManager:
-    """Manages campaign-level data and session tracking."""
-    
-    def __init__(self, database_path: Union[str, Path] = "game_data/campaign.db"):
-        self.db_path = Path(database_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize_database()
-    
-    def _initialize_database(self) -> None:
-        """Initialize campaign database schema."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS campaigns (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT UNIQUE NOT NULL,
-                    description TEXT,
-                    dm_name TEXT,
-                    created_date TEXT,
-                    starting_level INTEGER DEFAULT 1,
-                    current_session INTEGER DEFAULT 0,
-                    total_sessions INTEGER DEFAULT 0,
-                    settings_json TEXT
-                );
-                
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id INTEGER PRIMARY KEY,
-                    campaign_id INTEGER,
-                    session_number INTEGER,
-                    session_date TEXT,
-                    duration_minutes INTEGER DEFAULT 0,
-                    experience_awarded INTEGER DEFAULT 0,
-                    story_notes TEXT,
-                    dm_notes TEXT,
-                    session_data_json TEXT,
-                    FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
-                );
-                
-                CREATE TABLE IF NOT EXISTS session_attendance (
-                    session_id INTEGER,
-                    player_name TEXT,
-                    character_name TEXT,
-                    FOREIGN KEY (session_id) REFERENCES sessions (id)
-                );
-            """)
-    
-    def create_campaign(self, campaign: Campaign) -> int:
-        """Create new campaign and return its ID."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            settings = {
-                'allowed_ancestries': campaign.allowed_ancestries,
-                'house_rules': campaign.house_rules
-            }
-            
-            cursor.execute("""
-                INSERT INTO campaigns 
-                (name, description, dm_name, created_date, starting_level, 
-                 current_session, total_sessions, settings_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                campaign.name, campaign.description, campaign.dm_name,
-                campaign.created_date.isoformat(), campaign.starting_level,
-                campaign.current_session, campaign.total_sessions,
-                json.dumps(settings)
-            ))
-            
-            campaign_id = cursor.lastrowid
-            log.info("Created campaign '%s' with ID %d", campaign.name, campaign_id)
-            return campaign_id
-    
-    def get_campaign(self, campaign_name: str) -> Optional[Campaign]:
-        """Get campaign by name."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT * FROM campaigns WHERE name = ?", (campaign_name,))
-            row = cursor.fetchone()
-            
-            if not row:
-                return None
-            
-            settings = json.loads(row['settings_json'] or '{}')
-            
-            return Campaign(
-                name=row['name'],
-                description=row['description'] or '',
-                dm_name=row['dm_name'] or '',
-                created_date=date.fromisoformat(row['created_date']),
-                starting_level=row['starting_level'],
-                current_session=row['current_session'],
-                total_sessions=row['total_sessions'],
-                allowed_ancestries=settings.get('allowed_ancestries', []),
-                house_rules=settings.get('house_rules', [])
-            )
-    
-    def add_session(self, campaign_name: str, session: CampaignSession) -> int:
-        """Add session to campaign."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            # Get campaign ID
-            cursor.execute("SELECT id FROM campaigns WHERE name = ?", (campaign_name,))
-            campaign_row = cursor.fetch
