@@ -8,7 +8,7 @@ from society_scribe.society_scribe import SocietyScribe
 
 def main():
     # Instantiate GameApprentice (starts Discord bot)
-    society_scribe = SocietyScribe()
+    society_scribe = SocietyScribe("./apprentice.env")
     society_scribe.run()
 
 
