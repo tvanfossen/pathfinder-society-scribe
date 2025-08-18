@@ -1,0 +1,6 @@
+.venv
+MistralModel
+QwenInstruct
+__pycache__
+*.db
+*.env

@@ -1,0 +1,15 @@
+[project]
+name = "pathfinder-game-apprentice"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "discord-py>=2.5.2",
+    "dotenv>=0.9.9",
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.12.4",
+    "pydantic>=2.11.7",
+    "starlette>=0.47.2",
+    "uvicorn>=0.35.0",
+]
