@@ -40,7 +40,7 @@ WORKDIR /app
 FROM base AS dependencies
 
 # Copy requirements file
-COPY requirements-docker.txt /tmp/requirements.txt
+COPY docker-requirements.txt /tmp/requirements.txt
 
 # Install Python packages
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \

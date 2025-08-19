@@ -66,7 +66,7 @@ Migrating existing PF2e campaign manager from multi-campaign file-based system t
   - Campaign container definition
   - Volume mounts for campaign data, pf2e.db, models
   - Environment variables
-- [ ] Create `requirements-docker.txt`:
+- [ ] Create `docker-requirements.txt`:
   - Separate from development requirements
   - Include production dependencies only
 
