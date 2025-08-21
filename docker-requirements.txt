@@ -1,4 +1,4 @@
-# Core Python dependencies for PF2e Campaign Manager
+# Core Python dependencies for PF2e Society Scribe
 # Python 3.10+ required
 
 # Web Framework

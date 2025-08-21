@@ -1,7 +1,7 @@
-# Agent Tasks - PF2e Campaign Manager Docker Migration
+# Agent Tasks - PF2e Society Scribe Docker Migration
 
 ## Project Overview
-Migrating existing PF2e campaign manager from multi-campaign file-based system to Docker-containerized single-campaign instances with web UI and Discord bot integration.
+Migrating existing PF2e society scribe from multi-campaign file-based system to Docker-containerized single-campaign instances with web UI and Discord bot integration.
 
 ## Current State
 - **Working Components:**

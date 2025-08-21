@@ -1,94 +1,46 @@
 version: '3.8'
-
 services:
-  campaign-manager:
-    image: pf2e-campaign-manager:latest
-    container_name: pf2e-campaign-manager
+  society-scribe:
     build:
       context: .
       dockerfile: Dockerfile
       target: application
-    
-    ports:
-      - "${PORT:-8000}:8000"
-    
+    image: pf2e-society-scribe:latest
+
+    # 👇 enable GPU for this service
+    gpus: all
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+      # your existing env…
       - CAMPAIGN_NAME=${CAMPAIGN_NAME:-default}
       - PORT=${PORT:-8000}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PYTHONPATH=/app
       - MODEL_NAME=${MODEL_NAME:-qwen-instruct}
-    
+
+    ports:
+      - "${PORT:-8000}:8000"
+
     volumes:
-      # Campaign-specific data (read-write)
       - ${HOME}/pf2e-campaigns/campaigns/${CAMPAIGN_NAME:-default}:/app/campaign-data
-      
-      # Shared resources (read-only)
       - ${HOME}/pf2e-campaigns/shared/pf2e.db:/app/data/pf2e.db:ro
       - ${HOME}/pf2e-campaigns/shared/models:/app/models:ro
-      
-      # Development mode - mount source code (optional)
-      # Uncomment for development:
-      # - ./src:/app/src:ro
-      # - ./tests:/app/tests:ro
-    
-    # Resource limits (adjust based on your hardware)
+
+    # (Optional) extra Compose GPU compatibility
     deploy:
       resources:
-        limits:
-          cpus: '4'
-          memory: 16G
         reservations:
-          cpus: '2'
-          memory: 8G
-    
-    # Restart policy
-    restart: unless-stopped
-    
-    # Logging configuration
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    
-    # Health check
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    
-    networks:
-      - pf2e-network
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
-  # Discord bot service (Phase 5 - commented out for now)
-  # discord-bot:
-  #   image: pf2e-discord-bot:latest
-  #   container_name: pf2e-discord-bot
-  #   build:
-  #     context: ./discord-bot
-  #     dockerfile: Dockerfile
-  #   environment:
-  #     - DISCORD_TOKEN=${DISCORD_TOKEN}
-  #     - CAMPAIGN_API_URL=http://campaign-manager:8000/api/v1
-  #   depends_on:
-  #     - campaign-manager
-  #   restart: unless-stopped
-  #   networks:
-  #     - pf2e-network
+    restart: unless-stopped
+    networks: [pf2e-network]
 
 networks:
   pf2e-network:
     driver: bridge
     name: pf2e-network
-
-volumes:
-  # Named volumes can be used instead of bind mounts if preferred
-  campaign-data:
-    driver: local
-  pf2e-db:
-    driver: local
-  models:
-    driver: local

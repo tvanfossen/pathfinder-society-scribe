@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 
+
 class TestDockerEnvironment:
     """Test that the Docker container environment is properly configured."""
     
