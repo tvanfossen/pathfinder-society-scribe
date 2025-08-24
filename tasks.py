@@ -13,7 +13,12 @@ PROJECT_NAME = "pf2e-society-scribe"
 DOCKER_IMAGE = f"{PROJECT_NAME}:latest"
 CONTAINER_NAME = f"{PROJECT_NAME}-container"
 DEFAULT_PORT = 8000
-CAMPAIGN_DATA_PATH = Path.home() / "pf2e-campaigns"
+
+# Directory structure
+HOME_DIR = Path.home()
+CAMPAIGN_DATA_PATH = HOME_DIR / "pf2e-campaigns"
+MODELS_PATH = CAMPAIGN_DATA_PATH / "models"
+TUTORIAL_PATH = CAMPAIGN_DATA_PATH / "tutorial"
 PROJECT_ROOT = Path(__file__).parent.resolve()
 
 # Use a single, configurable Docker command everywhere.
@@ -25,6 +30,48 @@ def print_header(message: str) -> None:
     print("\n" + "=" * 60)
     print(f"  {message}")
     print("=" * 60 + "\n")
+
+
+def ensure_directories() -> None:
+    """Ensure required directories exist."""
+    CAMPAIGN_DATA_PATH.mkdir(parents=True, exist_ok=True)
+    MODELS_PATH.mkdir(parents=True, exist_ok=True)
+    TUTORIAL_PATH.mkdir(parents=True, exist_ok=True)
+
+
+@task
+def setup(c: Context) -> None:
+    """
+    Initial setup - create directories and tutorial data.
+    """
+    print_header("Setting up PF2e Society Scribe")
+    
+    ensure_directories()
+    
+    # Run tutorial setup if it exists and tutorial isn't set up
+    if not (TUTORIAL_PATH / "characters").exists():
+        setup_script = PROJECT_ROOT / "setup_tutorial.py"
+        if setup_script.exists():
+            print("📚 Setting up tutorial campaign...")
+            c.run(f"{sys.executable} {setup_script}", pty=True)
+        else:
+            print("⚠️  setup_tutorial.py not found")
+    
+    print("\n✅ Setup complete!")
+    print(f"📁 Campaign data: {CAMPAIGN_DATA_PATH}")
+    print(f"📁 Models: {MODELS_PATH}")
+    print(f"📁 Tutorial: {TUTORIAL_PATH}")
+    
+    # List available models
+    models = list(MODELS_PATH.glob("*.gguf"))
+    if models:
+        print("\n📦 Available models:")
+        for model in models:
+            size_gb = model.stat().st_size / (1024**3)
+            print(f"  - {model.name} ({size_gb:.2f} GB)")
+    else:
+        print("\n⚠️  No models found. Download GGUF models to:")
+        print(f"   {MODELS_PATH}/")
 
 
 @task
@@ -55,8 +102,6 @@ def build(
         f"--build-arg GGML_CUDA_ARCH_LIST={arch_list} "
     )
 
-    # If your env already defines DOCKER as "sudo docker", don't add another sudo.
-    # Keep the explicit sudo here since your snippet showed 'sudo {DOCKER}'.
     cmd = (
         f"sudo {DOCKER} build {cache_flag} "
         f"--progress={progress} "
@@ -82,32 +127,48 @@ def test(
     c: Context,
     verbose: bool = False,
     coverage: bool = True,
-    model_file: str = "Qwen2.5-7B-Instruct-Q6_K_L.gguf",
+    model_file: str = None,
 ) -> None:
     """
-    Run pytest in the CUDA container. Requires a model file under /app/models.
-    The host-side file must exist at .tmp/models/<model_file>.
+    Run pytest in the CUDA container.
+    
+    Args:
+        c: Invoke context
+        verbose: Verbose test output
+        coverage: Generate coverage report
+        model_file: GGUF model file name (must be in ~/pf2e-campaigns/models/)
     """
     print_header("Running Tests in Docker (GPU-only)")
+
+    ensure_directories()
 
     # Ensure image exists
     if not c.run(f'{DOCKER} images -q {DOCKER_IMAGE}', hide=True).stdout.strip():
         print("Image not found. Building first...")
         build(c)
 
-    # temp host dirs for mounts
-    tmp_root = PROJECT_ROOT / ".tmp"
-    models_host = tmp_root / "models"
-    (tmp_root / "campaign-data").mkdir(parents=True, exist_ok=True)
-    (tmp_root / "data").mkdir(parents=True, exist_ok=True)
-    models_host.mkdir(parents=True, exist_ok=True)
-
-    # Require the model to be present for a strict GPU-only test run
-    model_host_path = models_host / model_file
-    if not model_host_path.exists():
-        print(f"❌ Test model not found: {model_host_path}")
-        print("   Place your GGUF there or pass --model-file=<name> (file must be under .tmp/models).")
-        sys.exit(1)
+    # Find or validate model
+    if model_file:
+        model_path = MODELS_PATH / model_file
+        if not model_path.exists():
+            print(f"❌ Model not found: {model_path}")
+            print(f"   Download your GGUF model to: {MODELS_PATH}/")
+            available = list(MODELS_PATH.glob("*.gguf"))
+            if available:
+                print("\n   Available models:")
+                for m in available:
+                    print(f"     - {m.name}")
+            sys.exit(1)
+    else:
+        # Try to find a model automatically
+        available = list(MODELS_PATH.glob("*.gguf"))
+        if available:
+            model_file = available[0].name
+            print(f"✓ Auto-selected model: {model_file}")
+        else:
+            print(f"❌ No GGUF models found in: {MODELS_PATH}/")
+            print("   Download a model first or specify with --model-file")
+            sys.exit(1)
 
     # pytest cmd
     pytest_cmd = "pytest"
@@ -116,30 +177,29 @@ def test(
     if coverage:
         pytest_cmd += " --cov=src --cov-report=term-missing --cov-report=html"
 
-    # strict GPU-only
+    # GPU configuration
     gpu_bits = "--gpus all -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility"
 
     env_vars = (
         "-e PYTHONPATH=/app "
-        "-e CAMPAIGN_DATA_PATH=/app/campaign-data "
-        "-e MODEL_PATH=/app/models "
-        "-e PF2E_DB_PATH=/app/data/pf2e.db "
+        f"-e CAMPAIGN_DATA_PATH=/campaign-data "
+        f"-e MODEL_PATH=/models "
+        f"-e MODEL_FILE={model_file} "
         "-e PORT=8000 "
-        f"-e MODEL_FILE=/app/models/{model_file} "
     )
 
     cmd = (
-        f"{DOCKER} run --rm {gpu_bits} "
+        f"sudo {DOCKER} run --rm {gpu_bits} "
         f"-v {PROJECT_ROOT}/tests:/app/tests:ro "
         f"-v {PROJECT_ROOT}/src:/app/src:ro "
-        f"-v {tmp_root}/campaign-data:/app/campaign-data "
-        f"-v {tmp_root}/data:/app/data "
-        f"-v {models_host}:/app/models "
+        f"-v {CAMPAIGN_DATA_PATH}:/campaign-data "
+        f"-v {MODELS_PATH}:/models:ro "
         f"{env_vars}"
         f"{DOCKER_IMAGE} {pytest_cmd}"
     )
 
     print(f"Running: {pytest_cmd}")
+    print(f"Model: {model_file}")
     result = c.run(cmd, pty=True, warn=True)
     if result.exited != 0:
         sys.exit(result.exited)
@@ -149,30 +209,47 @@ def test(
 @task
 def run(
     c: Context,
-    campaign: str = "default",
+    campaign: str = "tutorial",
     port: int = DEFAULT_PORT,
     detach: bool = False,
     dev: bool = False,
-    model_file: str = "Qwen2.5-7B-Instruct-Q6_K_L.gguf",
+    model_file: str = None,
 ) -> None:
     """
-    Run the container (GPU-only). MODEL_FILE must exist under shared/models.
+    Run the container (GPU-only).
+    
+    Args:
+        c: Invoke context
+        campaign: Campaign name (default: tutorial)
+        port: Port to expose
+        detach: Run in background
+        dev: Development mode (mount src directory)
+        model_file: GGUF model file name
     """
     print_header(f"Starting Campaign: {campaign}")
+
+    ensure_directories()
 
     if not c.run(f'{DOCKER} images -q {DOCKER_IMAGE}', hide=True).stdout.strip():
         print("Image not found. Building first...")
         build(c)
 
-    campaign_path = CAMPAIGN_DATA_PATH / "campaigns" / campaign
-    shared_path = CAMPAIGN_DATA_PATH / "shared"
-    (campaign_path).mkdir(parents=True, exist_ok=True)
-    (shared_path / "models").mkdir(parents=True, exist_ok=True)
+    # Find or validate model
+    if model_file:
+        model_path = MODELS_PATH / model_file
+        if not model_path.exists():
+            print(f"❌ Model not found: {model_path}")
+            sys.exit(1)
+    else:
+        available = list(MODELS_PATH.glob("*.gguf"))
+        if available:
+            model_file = available[0].name
+            print(f"✓ Using model: {model_file}")
+        else:
+            print(f"❌ No models found in: {MODELS_PATH}/")
+            sys.exit(1)
 
-    model_host = shared_path / "models" / model_file
-    if not model_host.exists():
-        print(f"❌ MODEL_FILE not found: {model_host}")
-        sys.exit(1)
+    campaign_path = CAMPAIGN_DATA_PATH / campaign
 
     # Stop any existing container
     stop(c, quiet=True)
@@ -180,7 +257,7 @@ def run(
     detach_flag = "-d" if detach else "-it"
 
     cmd = (
-        f"{DOCKER} run "
+        f"sudo {DOCKER} run "
         f"{detach_flag} --rm "
         f"--name {CONTAINER_NAME} "
         f"-p {port}:{port} "
@@ -188,17 +265,14 @@ def run(
         f"-e NVIDIA_VISIBLE_DEVICES=all "
         f"-e NVIDIA_DRIVER_CAPABILITIES=compute,utility "
         f"-v {campaign_path}:/app/campaign-data "
-        f"-v {shared_path}/pf2e.db:/app/data/pf2e.db:ro "
-        f"-v {shared_path}/models:/app/models:ro "
+        f"-v {MODELS_PATH}:/models:ro "
         + (f"-v {PROJECT_ROOT}/src:/app/src:ro " if dev else "")
-        +
-        f"-e CAMPAIGN_NAME={campaign} "
+        + f"-e CAMPAIGN_NAME={campaign} "
         f"-e PORT={port} "
         "-e PYTHONPATH=/app "
         "-e CAMPAIGN_DATA_PATH=/app/campaign-data "
-        "-e MODEL_PATH=/app/models "
-        "-e PF2E_DB_PATH=/app/data/pf2e.db "
-        f"-e MODEL_FILE=/app/models/{model_file} "
+        "-e MODEL_PATH=/models "
+        f"-e MODEL_FILE={model_file} "
         f"{DOCKER_IMAGE}"
     )
 
@@ -234,7 +308,7 @@ def stop(c: Context, quiet: bool = False) -> None:
     result = c.run(f"{DOCKER} ps -q -f name={CONTAINER_NAME}", hide=True)
 
     if result.stdout.strip():
-        c.run(f"{DOCKER} stop {CONTAINER_NAME}", hide=not quiet, warn=True)
+        c.run(f"sudo {DOCKER} stop {CONTAINER_NAME}", hide=not quiet, warn=True)
         if not quiet:
             print(f"✅ Stopped {CONTAINER_NAME}")
     else:
@@ -271,7 +345,7 @@ def logs(c: Context, follow: bool = False, lines: int = 50) -> None:
 
 
 @task
-def shell(c: Context, campaign: str = "default") -> None:
+def shell(c: Context, campaign: str = "tutorial") -> None:
     """
     Open a shell inside the running container.
 
@@ -289,7 +363,7 @@ def shell(c: Context, campaign: str = "default") -> None:
         run(c, campaign=campaign, detach=True)
 
     print("Opening shell in container (type 'exit' to leave)")
-    c.run(f"{DOCKER} exec -it {CONTAINER_NAME} /bin/bash", pty=True)
+    c.run(f"sudo {DOCKER} exec -it {CONTAINER_NAME} /bin/bash", pty=True)
 
 
 @task
@@ -309,14 +383,14 @@ def clean(c: Context, all_images: bool = False) -> None:
     # Remove project images
     if all_images:
         print("Removing all project images...")
-        c.run(f"{DOCKER} rmi -f $({DOCKER} images '{PROJECT_NAME}*' -q)", warn=True)
+        c.run(f"sudo {DOCKER} rmi -f $(sudo {DOCKER} images '{PROJECT_NAME}*' -q)", warn=True)
     else:
         print(f"Removing image: {DOCKER_IMAGE}")
-        c.run(f"{DOCKER} rmi -f {DOCKER_IMAGE}", warn=True)
+        c.run(f"sudo {DOCKER} rmi -f {DOCKER_IMAGE}", warn=True)
 
     # Clean up dangling images
     print("Cleaning up dangling images...")
-    c.run(f"{DOCKER} image prune -f", warn=True)
+    c.run(f"sudo {DOCKER} image prune -f", warn=True)
 
     print("✅ Cleanup complete")
 
@@ -324,7 +398,7 @@ def clean(c: Context, all_images: bool = False) -> None:
 @task
 def status(c: Context) -> None:
     """
-    Show status of containers and images.
+    Show status of containers, images, and data.
 
     Args:
         c: Invoke context
@@ -339,7 +413,7 @@ def status(c: Context) -> None:
 
     print("\n📁 Campaign Data:")
     if CAMPAIGN_DATA_PATH.exists():
-        campaigns = list((CAMPAIGN_DATA_PATH / "campaigns").glob("*/"))
+        campaigns = [d for d in CAMPAIGN_DATA_PATH.iterdir() if d.is_dir() and d.name != "models"]
         if campaigns:
             for campaign_dir in campaigns:
                 size = sum(f.stat().st_size for f in campaign_dir.rglob("*") if f.is_file())
@@ -350,17 +424,17 @@ def status(c: Context) -> None:
         print(f"  Campaign directory not found: {CAMPAIGN_DATA_PATH}")
 
     print("\n🤖 Models:")
-    models_path = CAMPAIGN_DATA_PATH / "shared" / "models"
-    if models_path.exists():
-        models = list(models_path.glob("*.gguf"))
+    if MODELS_PATH.exists():
+        models = list(MODELS_PATH.glob("*.gguf"))
         if models:
             for model_file in models:
                 size = model_file.stat().st_size / 1024 / 1024 / 1024
                 print(f"  - {model_file.name}: {size:.2f} GB")
         else:
             print("  No models found")
+            print(f"  Download models to: {MODELS_PATH}/")
     else:
-        print(f"  Models directory not found: {models_path}")
+        print(f"  Models directory not found: {MODELS_PATH}")
 
 
 @task
@@ -420,7 +494,7 @@ except ImportError as e:
 """
 
     cmd = (
-        f"{DOCKER} run --rm "
+        f"sudo {DOCKER} run --rm "
         f"--gpus all "
         f"-e NVIDIA_VISIBLE_DEVICES=all "
         f"-e NVIDIA_DRIVER_CAPABILITIES=compute,utility "
@@ -429,6 +503,39 @@ except ImportError as e:
     )
 
     c.run(cmd, pty=True)
+
+
+@task
+def download_model(c: Context, url: str = None, name: str = None) -> None:
+    """
+    Download a GGUF model to the models directory.
+    
+    Args:
+        c: Invoke context
+        url: URL of the model to download
+        name: Optional name for the downloaded file
+    """
+    ensure_directories()
+    
+    if not url:
+        print("Common Qwen2.5 models:")
+        print("  - Qwen2.5-7B-Instruct-Q6_K_L.gguf")
+        print("  - Qwen2.5-7B-Instruct-Q4_K_M.gguf")
+        print("  - Qwen2.5-14B-Instruct-Q4_K_M.gguf")
+        print("\nProvide URL with: --url <model_url>")
+        print(f"\nModels will be saved to: {MODELS_PATH}/")
+        return
+    
+    if name:
+        output_file = MODELS_PATH / name
+    else:
+        output_file = MODELS_PATH / Path(url).name
+    
+    print(f"📥 Downloading to: {output_file}")
+    c.run(f"wget -O '{output_file}' '{url}'", pty=True)
+    
+    size_gb = output_file.stat().st_size / (1024**3)
+    print(f"✅ Model downloaded: {output_file.name} ({size_gb:.2f} GB)")
 
 
 @task(help={
@@ -449,7 +556,11 @@ def help(c: Context, list: bool = False, verbose: bool = False) -> None:
     if list or verbose:
         c.run("invoke --list", pty=True)
     else:
-        print("Common commands:")
+        print("Setup:")
+        print(f"  invoke setup         - Initial setup (creates {CAMPAIGN_DATA_PATH})")
+        print("  invoke download-model --url=<url>  - Download GGUF model")
+        print()
+        print("Docker commands:")
         print("  invoke build         - Build Docker image with GPU support")
         print("  invoke test          - Run tests in container")
         print("  invoke run           - Start campaign container")
@@ -459,13 +570,16 @@ def help(c: Context, list: bool = False, verbose: bool = False) -> None:
         print("  invoke status        - Show Docker status")
         print("  invoke gpu-check     - Check GPU/CUDA availability")
         print("  invoke clean         - Clean up resources")
+        print()
+        print(f"Models directory: {MODELS_PATH}/")
+        print(f"Campaign data: {CAMPAIGN_DATA_PATH}/")
         print("\nFor more options: invoke --help [command]")
         print("List all tasks: invoke help --list")
 
 
 # Alias common tasks for convenience
 @task
-def up(c: Context, campaign: str = "default") -> None:
+def up(c: Context, campaign: str = "tutorial") -> None:
     """Alias for 'run' - start the campaign container."""
     run(c, campaign=campaign)
 

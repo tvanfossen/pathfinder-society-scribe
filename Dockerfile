@@ -1,114 +1,98 @@
-# Multi-stage Dockerfile for PF2e Campaign Manager with GPU Support
-# Build environment: NVIDIA CUDA 12.2, Ubuntu 22.04, Python 3.10+
+# Dockerfile
+# GPU-enabled container for PF2e Society Scribe
 
-# Stage 1: Base build environment with CUDA
-FROM nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04 AS base
+ARG CUDA_VERSION=12.2.2
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04
 
-# Prevent interactive prompts during package installation
+# Prevent interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# CUDA environment variables
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=${CUDA_HOME}/bin:${PATH}
-ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
-
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     python3.10 \
-    python3.10-dev \
     python3-pip \
+    python3.10-dev \
     build-essential \
     cmake \
     git \
-    curl \
     wget \
-    # For model runtime (llama.cpp dependencies)
-    libopenblas-dev \
-    liblapack-dev \
-    libgomp1 \
-    # For potential audio processing
-    libsndfile1 \
-    # Cleanup
-    && apt-get clean \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app user and directories
-RUN useradd -m -s /bin/bash appuser && \
-    mkdir -p /app /app/data /app/models /app/campaign-data && \
-    chown -R appuser:appuser /app
+# Set Python 3.10 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
 
+# Upgrade pip
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Set working directory
 WORKDIR /app
 
-# Stage 2: Python dependencies
-FROM base AS dependencies
+# Copy requirements first for better caching
+COPY requirements.txt .
 
-# Copy requirements file
-COPY docker-requirements.txt /tmp/requirements.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Python packages with CUDA support
-# Using pre-built wheel for llama-cpp-python with CUDA 12.1 (compatible with 12.2)
-RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip3 install --no-cache-dir \
-    "llama-cpp-python==0.2.90" \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 && \
-    pip3 install --no-cache-dir -r /tmp/requirements.txt
+# Install llama-cpp-python with CUDA support
+# Using environment variables for the build
+ENV CMAKE_ARGS="-DLLAMA_CUBLAS=on"
+ENV FORCE_CMAKE=1
+ENV LLAMA_CUBLAS=1
+ENV GGML_CUDA_ARCH_LIST="${GGML_CUDA_ARCH_LIST:-61}"
 
-# Stage 3: Application with runtime CUDA
-FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04 AS application
-
-# Copy Python installation from dependencies stage
-COPY --from=dependencies /usr /usr
-COPY --from=dependencies /app /app
-
-# Install runtime dependencies only
-RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3-pip \
-    libopenblas0 \
-    libgomp1 \
-    libsndfile1 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create app user and directories
-RUN useradd -m -s /bin/bash appuser && \
-    chown -R appuser:appuser /app
-
-WORKDIR /app
+RUN pip install --no-cache-dir --force-reinstall --no-binary llama-cpp-python llama-cpp-python
 
 # Copy application code
-COPY --chown=appuser:appuser src/ /app/src/
-COPY --chown=appuser:appuser tests/ /app/tests/
+COPY src/ /app/src/
+COPY tests/ /app/tests/
+COPY setup_tutorial.py /app/
+COPY conftest.py /app/
+COPY pytest.ini /app/
 
 # Create necessary directories
-RUN mkdir -p \
-    /app/logs \
-    /app/tmp \
-    /app/campaign-data \
-    /app/data \
-    /app/models && \
-    chown -R appuser:appuser /app
+RUN mkdir -p /campaign-data /models /app/data
 
-# Switch to non-root user
-USER appuser
-
-# Environment variables
+# Set environment variables
 ENV PYTHONPATH=/app
-ENV CAMPAIGN_DATA_PATH=/app/campaign-data
-ENV MODEL_PATH=/app/models
-ENV PF2E_DB_PATH=/app/data/pf2e.db
+ENV CAMPAIGN_DATA_PATH=/campaign-data
+ENV MODEL_PATH=/models
 ENV PORT=8000
-# Enable GPU 0 for CUDA
-ENV CUDA_VISIBLE_DEVICES=0
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python3 -c "import sys; sys.exit(0)" || exit 1
+# Create a simple entrypoint script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+# Check if running tests\n\
+if [[ "$1" == "pytest" ]]; then\n\
+    exec "$@"\n\
+# Check if running shell\n\
+elif [[ "$1" == "/bin/bash" ]] || [[ "$1" == "bash" ]]; then\n\
+    exec "$@"\n\
+# Default: run the web application\n\
+else\n\
+    echo "Starting PF2e Society Scribe..."\n\
+    echo "Model: ${MODEL_FILE:-Not specified}"\n\
+    echo "Port: ${PORT}"\n\
+    echo "Campaign: ${CAMPAIGN_NAME:-default}"\n\
+    \n\
+    # Run the application\n\
+    if [ -f /app/src/web/app.py ]; then\n\
+        exec python -m uvicorn src.web.app:app --host 0.0.0.0 --port ${PORT}\n\
+    else\n\
+        echo "Application not found. Starting Python shell..."\n\
+        exec python\n\
+    fi\n\
+fi' > /entrypoint.sh && chmod +x /entrypoint.sh
 
-# Expose port for web UI
+# Expose port
 EXPOSE 8000
 
-# Default command - test GPU availability
-CMD ["python3", "-c", "import llama_cpp; print('PF2e Campaign Manager with GPU - Container Ready'); print('Testing CUDA availability...'); import torch if 'torch' in dir() else None; import time; time.sleep(3600)"]
+# Set entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default command (can be overridden)
+CMD []
