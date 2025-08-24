@@ -37,14 +37,9 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install llama-cpp-python with CUDA support
-# Using environment variables for the build
-ENV CMAKE_ARGS="-DLLAMA_CUBLAS=on"
-ENV FORCE_CMAKE=1
-ENV LLAMA_CUBLAS=1
-ENV GGML_CUDA_ARCH_LIST="${GGML_CUDA_ARCH_LIST:-61}"
-
-RUN pip install --no-cache-dir --force-reinstall --no-binary llama-cpp-python llama-cpp-python
+# Install llama-cpp-python with CUDA support using pre-compiled wheels
+# For CUDA 12.2 (matches our base image)
+RUN pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122
 
 # Copy application code
 COPY src/ /app/src/
@@ -60,6 +55,7 @@ RUN mkdir -p /campaign-data /models /app/data
 ENV PYTHONPATH=/app
 ENV CAMPAIGN_DATA_PATH=/campaign-data
 ENV MODEL_PATH=/models
+ENV PF2E_DB_PATH=/app/data/pf2e.db
 ENV PORT=8000
 
 # Create a simple entrypoint script

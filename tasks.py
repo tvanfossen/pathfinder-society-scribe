@@ -185,6 +185,7 @@ def test(
         f"-e CAMPAIGN_DATA_PATH=/campaign-data "
         f"-e MODEL_PATH=/models "
         f"-e MODEL_FILE={model_file} "
+        "-e PF2E_DB_PATH=/app/data/pf2e.db "
         "-e PORT=8000 "
     )
 
@@ -436,106 +437,6 @@ def status(c: Context) -> None:
     else:
         print(f"  Models directory not found: {MODELS_PATH}")
 
-
-@task
-def gpu_check(c: Context) -> None:
-    """
-    Check GPU availability and CUDA status in the container.
-    """
-    print_header("GPU/CUDA Status Check")
-
-    # Check if image exists
-    if not c.run(f'{DOCKER} images -q {DOCKER_IMAGE}', hide=True).stdout.strip():
-        print("Image not found. Building first...")
-        build(c)
-
-    print("Checking CUDA availability in container...\n")
-
-    # Python script to check GPU
-    check_script = """
-import sys
-print("Python:", sys.version)
-print()
-
-# Check for CUDA via nvidia-smi
-import subprocess
-try:
-    result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
-    print("NVIDIA-SMI Output:")
-    print(result.stdout)
-except Exception as e:
-    print(f"nvidia-smi not available: {e}")
-
-print("-" * 60)
-
-# Check llama-cpp-python CUDA support
-try:
-    import llama_cpp
-    print("✅ llama-cpp-python imported successfully")
-    print(f"   Version: {llama_cpp.__version__ if hasattr(llama_cpp, '__version__') else 'unknown'}")
-    
-    # Try to check CUDA availability
-    try:
-        # This will fail if no CUDA support, but that's OK
-        model = llama_cpp.Llama(
-            model_path="/dev/null",  # Dummy path
-            n_gpu_layers=1,
-            verbose=False
-        )
-    except Exception as init_error:
-        # Check if error mentions CUDA
-        if "CUDA" in str(init_error) or "GPU" in str(init_error):
-            print("   CUDA mentioned in init - likely compiled with CUDA support")
-        else:
-            print(f"   Init test result: {init_error}")
-    
-except ImportError as e:
-    print(f"❌ Failed to import llama-cpp-python: {e}")
-"""
-
-    cmd = (
-        f"sudo {DOCKER} run --rm "
-        f"--gpus all "
-        f"-e NVIDIA_VISIBLE_DEVICES=all "
-        f"-e NVIDIA_DRIVER_CAPABILITIES=compute,utility "
-        f"{DOCKER_IMAGE} "
-        f'python3 -c "{check_script}"'
-    )
-
-    c.run(cmd, pty=True)
-
-
-@task
-def download_model(c: Context, url: str = None, name: str = None) -> None:
-    """
-    Download a GGUF model to the models directory.
-    
-    Args:
-        c: Invoke context
-        url: URL of the model to download
-        name: Optional name for the downloaded file
-    """
-    ensure_directories()
-    
-    if not url:
-        print("Common Qwen2.5 models:")
-        print("  - Qwen2.5-7B-Instruct-Q6_K_L.gguf")
-        print("  - Qwen2.5-7B-Instruct-Q4_K_M.gguf")
-        print("  - Qwen2.5-14B-Instruct-Q4_K_M.gguf")
-        print("\nProvide URL with: --url <model_url>")
-        print(f"\nModels will be saved to: {MODELS_PATH}/")
-        return
-    
-    if name:
-        output_file = MODELS_PATH / name
-    else:
-        output_file = MODELS_PATH / Path(url).name
-    
-    print(f"📥 Downloading to: {output_file}")
-    c.run(f"wget -O '{output_file}' '{url}'", pty=True)
-    
-    size_gb = output_file.stat().st_size / (1024**3)
-    print(f"✅ Model downloaded: {output_file.name} ({size_gb:.2f} GB)")
 
 
 @task(help={
