@@ -44,7 +44,6 @@ RUN pip install llama-cpp-python --extra-index-url https://abetlen.github.io/lla
 # Copy application code
 COPY src/ /app/src/
 COPY tests/ /app/tests/
-COPY setup_tutorial.py /app/
 COPY conftest.py /app/
 COPY pytest.ini /app/
 
