@@ -11,9 +11,9 @@ import pytest
 # Add src to Python path
 sys.path.insert(0, '/app')
 
-# Configuration
-CAMPAIGN_DATA_PATH = Path(os.environ.get("CAMPAIGN_DATA_PATH", "/campaign-data"))
-MODEL_PATH = Path(os.environ.get("MODEL_PATH", "/models"))
+# Configuration - Use consistent /app/campaign-data path
+CAMPAIGN_DATA_PATH = Path(os.environ.get("CAMPAIGN_DATA_PATH", "/app/campaign-data"))
+MODEL_PATH = Path(os.environ.get("MODEL_PATH", "/app/models"))
 MODEL_FILE = os.environ.get("MODEL_FILE", "")
 
 # Ensure directories exist

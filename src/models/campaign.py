@@ -204,7 +204,7 @@ class Campaign(TimestampedModel):
     
     def add_player(self, name: str, email: Optional[str] = None) -> None:
         """Add a player to the campaign."""
-        self.players[name] = email or ""
+        self.players[name] = email or ""  # This is correct
         self.touch()
     
     def remove_player(self, name: str) -> None:

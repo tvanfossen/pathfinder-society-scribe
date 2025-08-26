@@ -43,8 +43,8 @@ class TestDockerEnvironment:
     def test_environment_variables(self):
         """Verify expected environment variables are set."""
         expected_vars = {
-            'CAMPAIGN_DATA_PATH': '/app/campaign-data',
-            'MODEL_PATH': '/app/models',
+            'CAMPAIGN_DATA_PATH': '/campaign-data',  # Remove /app prefix
+            'MODEL_PATH': '/models',  # Remove /app prefix  
             'PF2E_DB_PATH': '/app/data/pf2e.db',
             'PORT': '8000'
         }

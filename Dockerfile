@@ -1,25 +1,48 @@
 # Dockerfile
 # GPU-enabled container for PF2e Society Scribe
+# Using manual CUDA installation that matches the working host setup
 
-ARG CUDA_VERSION=12.2.2
-FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04
+FROM ubuntu:22.04
 
 # Prevent interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Install system dependencies
+# Install basic dependencies first
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3-pip \
     python3.10-dev \
     build-essential \
-    cmake \
     git \
     wget \
     curl \
+    gnupg \
+    software-properties-common \
     && rm -rf /var/lib/apt/lists/*
+
+# Install NVIDIA drivers
+RUN apt-get update && \
+    apt-get install -y nvidia-driver-555-open nvidia-utils-555 && \
+    apt-get install -y cuda-drivers-555 || true
+
+# Install CUDA 12.5.1 toolkit exactly as on host
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-ubuntu2204.pin && \
+    mv cuda-ubuntu2204.pin /etc/apt/preferences.d/cuda-repository-pin-600 && \
+    wget https://developer.download.nvidia.com/compute/cuda/12.5.1/local_installers/cuda-repo-ubuntu2204-12-5-local_12.5.1-555.42.06-1_amd64.deb && \
+    dpkg -i cuda-repo-ubuntu2204-12-5-local_12.5.1-555.42.06-1_amd64.deb && \
+    cp /var/cuda-repo-ubuntu2204-12-5-local/cuda-*-keyring.gpg /usr/share/keyrings/ && \
+    apt-get update && \
+    apt-get -y install cuda-toolkit-12-5 && \
+    rm -f cuda-repo-ubuntu2204-12-5-local_12.5.1-555.42.06-1_amd64.deb && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set CUDA environment variables
+ENV PATH=/usr/local/cuda-12.5/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.5/lib64:${LD_LIBRARY_PATH}
+ENV CUDA_HOME=/usr/local/cuda-12.5
 
 # Set Python 3.10 as default
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 && \
@@ -34,12 +57,13 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies EXCEPT llama-cpp-python
+RUN grep -v llama-cpp-python requirements.txt > requirements-no-llama.txt && \
+    pip install --no-cache-dir -r requirements-no-llama.txt
 
-# Install llama-cpp-python with CUDA support using pre-compiled wheels
-# For CUDA 12.2 (matches our base image)
-RUN pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122
+# Install CUDA-enabled llama-cpp-python using the exact command that works
+RUN pip install llama-cpp-python \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu125
 
 # Copy application code
 COPY src/ /app/src/
@@ -57,7 +81,7 @@ ENV MODEL_PATH=/models
 ENV PF2E_DB_PATH=/app/data/pf2e.db
 ENV PORT=8000
 
-# Create a simple entrypoint script
+# Create entrypoint script
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
@@ -89,5 +113,5 @@ EXPOSE 8000
 # Set entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
 
-# Default command (can be overridden)
+# Default command
 CMD []

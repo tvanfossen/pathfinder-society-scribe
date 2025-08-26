@@ -38,49 +38,13 @@ def ensure_directories() -> None:
     MODELS_PATH.mkdir(parents=True, exist_ok=True)
     TUTORIAL_PATH.mkdir(parents=True, exist_ok=True)
 
-
-@task
-def setup(c: Context) -> None:
-    """
-    Initial setup - create directories and tutorial data.
-    """
-    print_header("Setting up PF2e Society Scribe")
-    
-    ensure_directories()
-    
-    # Run tutorial setup if it exists and tutorial isn't set up
-    if not (TUTORIAL_PATH / "characters").exists():
-        setup_script = PROJECT_ROOT / "setup_tutorial.py"
-        if setup_script.exists():
-            print("📚 Setting up tutorial campaign...")
-            c.run(f"{sys.executable} {setup_script}", pty=True)
-        else:
-            print("⚠️  setup_tutorial.py not found")
-    
-    print("\n✅ Setup complete!")
-    print(f"📁 Campaign data: {CAMPAIGN_DATA_PATH}")
-    print(f"📁 Models: {MODELS_PATH}")
-    print(f"📁 Tutorial: {TUTORIAL_PATH}")
-    
-    # List available models
-    models = list(MODELS_PATH.glob("*.gguf"))
-    if models:
-        print("\n📦 Available models:")
-        for model in models:
-            size_gb = model.stat().st_size / (1024**3)
-            print(f"  - {model.name} ({size_gb:.2f} GB)")
-    else:
-        print("\n⚠️  No models found. Download GGUF models to:")
-        print(f"   {MODELS_PATH}/")
-
-
 @task
 def build(
     c: Context,
     no_cache: bool = False,
-    cuda_version: str = os.environ.get("CUDA_VERSION", "12.5.0"),
+    cuda_version: str = os.environ.get("CUDA_VERSION", "12.5.0"),  # Changed from 12.2.2
     arch_list: str = os.environ.get("GGML_CUDA_ARCH_LIST", "61"),
-    progress: str = "plain",  # 'auto' or 'plain'
+    progress: str = "plain",
 ) -> None:
     """
     Build the Docker image (GPU-only) tuned for GTX 1080 Ti (Pascal, SM 6.1).
@@ -182,8 +146,8 @@ def test(
 
     env_vars = (
         "-e PYTHONPATH=/app "
-        f"-e CAMPAIGN_DATA_PATH=/campaign-data "
-        f"-e MODEL_PATH=/models "
+        f"-e CAMPAIGN_DATA_PATH=/campaign-data "  # Remove /app prefix
+        f"-e MODEL_PATH=/models "  # These should match what Docker expects
         f"-e MODEL_FILE={model_file} "
         "-e PF2E_DB_PATH=/app/data/pf2e.db "
         "-e PORT=8000 "
@@ -457,10 +421,6 @@ def help(c: Context, list: bool = False, verbose: bool = False) -> None:
     if list or verbose:
         c.run("invoke --list", pty=True)
     else:
-        print("Setup:")
-        print(f"  invoke setup         - Initial setup (creates {CAMPAIGN_DATA_PATH})")
-        print("  invoke download-model --url=<url>  - Download GGUF model")
-        print()
         print("Docker commands:")
         print("  invoke build         - Build Docker image with GPU support")
         print("  invoke test          - Run tests in container")
@@ -469,7 +429,6 @@ def help(c: Context, list: bool = False, verbose: bool = False) -> None:
         print("  invoke logs          - View container logs")
         print("  invoke shell         - Open shell in container")
         print("  invoke status        - Show Docker status")
-        print("  invoke gpu-check     - Check GPU/CUDA availability")
         print("  invoke clean         - Clean up resources")
         print()
         print(f"Models directory: {MODELS_PATH}/")

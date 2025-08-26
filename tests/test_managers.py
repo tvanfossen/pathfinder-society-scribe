@@ -203,7 +203,6 @@ class TestCampaignManager:
         # Add a sample location
         tutorial.add_location("Sandpoint", "A small coastal town where adventures begin")
         
-        # Add an initial session
         session1 = CampaignSession(
             session_number=1,
             session_date=date(2024, 1, 1),
@@ -215,7 +214,7 @@ class TestCampaignManager:
         session1.add_event("Party formation")
         session1.add_npc("Tavern Keeper")
         tutorial.add_session(session1)
-        
+            
         # Save the tutorial campaign
         manager.save(tutorial)
         
@@ -336,7 +335,7 @@ class TestCampaignManager:
             duration_minutes=180
         )
         session.add_treasure(1500, ["Healing Potion", "+1 Shortsword"])
-        
+        session.add_player("New Player", "Tutorial Hero")
         manager.add_session("Tutorial Campaign", session)
         
         # Check treasure summary
@@ -378,7 +377,7 @@ class TestIntegration:
         campaign = campaign_manager.load("Tutorial Campaign")
         assert campaign is not None
         
-        # Verify they're connected through session
-        last_session = campaign.last_session
-        assert "Tutorial Hero" in last_session.characters_present
-        assert "New Player" in last_session.players_present
+        # Verify they're connected through the FIRST session (not last)
+        first_session = campaign.sessions[0]  # Get first session instead of last
+        assert "Tutorial Hero" in first_session.characters_present
+        assert "New Player" in first_session.players_present

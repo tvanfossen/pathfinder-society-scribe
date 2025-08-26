@@ -203,7 +203,7 @@ class Shield(Equipment):
     @property
     def is_broken(self) -> bool:
         """Check if shield is broken."""
-        return self.hit_points <= self.broken_threshold
+        return self.hit_points <= self.broken_threshold 
     
     def take_damage(self, damage: int) -> int:
         """Apply damage to shield, returns overflow damage."""
